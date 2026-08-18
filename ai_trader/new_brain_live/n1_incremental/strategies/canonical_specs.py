@@ -23,6 +23,19 @@ STRATEGY_ID_G0037 = "g0037_trend_up_pullback_long"
 STRATEGY_ID_G0184 = "g0184_trend_up_continuation_long"
 STRATEGY_ID_G0059 = "g0059_trend_up_momentum_long"
 
+INTEGRATION_STATUS = "INTEGRATION_BLOCKED_UNKNOWN_STRATEGY_CATALOG"
+"""CEO stop-and-record decision, 2026-08-18 -- see `strategies/__init__.py`'s own docstring and
+`tests/test_sealed_catalog_blocker.py` for the full, reproducible finding: `ve_brain.decide_n6`'s
+internal sealed catalog only recognizes 4 strategies, none of which are these three. Every strategy_id
+below maps to this SAME status -- there is no per-strategy variant, since the blocking mechanism
+(catalog-membership rejection at decide_n6's step 3) is identical and unconditional for all three."""
+
+INTEGRATION_STATUS_BY_STRATEGY_ID: dict[str, str] = {
+    STRATEGY_ID_G0037: INTEGRATION_STATUS,
+    STRATEGY_ID_G0184: INTEGRATION_STATUS,
+    STRATEGY_ID_G0059: INTEGRATION_STATUS,
+}
+
 FLAG_ENV_VAR_G0037 = "AI_TRADER_STRATEGY_G0037_ENABLED"
 FLAG_ENV_VAR_G0184 = "AI_TRADER_STRATEGY_G0184_ENABLED"
 FLAG_ENV_VAR_G0059 = "AI_TRADER_STRATEGY_G0059_ENABLED"

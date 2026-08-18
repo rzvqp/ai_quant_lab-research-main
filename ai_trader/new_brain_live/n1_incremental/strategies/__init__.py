@@ -14,20 +14,39 @@ RECORDS.json`'s own `spec` field for `CAND-G0037`/`CAND-G0184`/`CAND-G0059`, nev
 | G0184 | continuation | atr2 | 40 | rr | 3.0 | b81e81c9457c | 46f6934b38a8e3f9 |
 | G0059 | momentum | atr2 | 40 | rr | 3.0 | 6f92d6eec429 | e9281125eba557d7 |
 
-**A genuine, disclosed finding, not a workaround**: `ve_brain.ProbabilityInputs.hierarchy` requires
-`OutcomeCell(n, n_target, n_horizon, sum_horizon_R)` -- a per-strategy breakdown of target-hit vs.
-horizon(time-stop)-exit trade counts. The canonical Alpha records carry `n`/`win_rate`/`EV_net_avg_R`/`PF`
-at the AGGREGATE level only -- no such breakdown exists anywhere in `CANONICAL_RERUN_RECORDS.json` for
-any of the three. Building `OutcomeCell` from this data would mean INVENTING the missing counts, which
-the CEO's own instruction explicitly forbids ("Nu inventa sau aproxima parametrii"). Per the CEO's own
-equally explicit fallback ("lipsă/invaliditate probability inputs → NO_TRADE, fără fallback"), this
-package therefore makes NO change to `probability_source.load_probability_inputs` at all -- it continues
-returning `None` for every strategy, these three included, exactly as it already does for the four
-existing canonical strategies. All three therefore resolve to `NO_TRADE`/`MISSING_PROBABILITY_INPUTS`
-through `ve_brain`'s own already-established gate until a genuine target/horizon breakdown exists --
-observational shadow telemetry only, structurally incapable of producing a TRADE decision today, which is
-exactly what `PROVISIONAL_SHADOW_ONLY` means.
+**Status: `INTEGRATION_BLOCKED_UNKNOWN_STRATEGY_CATALOG` (CEO stop-and-record decision, 2026-08-18).**
 
-Status at delivery: built and tested, each behind its OWN feature flag, all three DEFAULT OFF. Not wired
+**The real, verified finding** (superseding an earlier, incorrect draft of this docstring that claimed
+these strategies would resolve to `NO_TRADE`/`MISSING_PROBABILITY_INPUTS`): `ve_brain.decide_n6`
+resolves the incoming `(strategy_id, strategy_version)` against its own INTERNAL, SEALED catalog
+(`ve_brain.n6._SEALED_CATALOG`) -- four entries only (`trend_pullback`, `range_fade`, `trend_shadow`,
+`trend_experimental`, every one `strategy_version="v1"`), baked into the installed package, not a
+parameter, not populatable from outside. A real `decide_n6()` call for G0037 with EVERY OTHER field
+maximally valid (`eligible=True`, N3/N4 available, market_map/levels available, and even a real,
+well-formed `probability_inputs`) still returns `NO_TRADE`/`UNKNOWN_STRATEGY` -- this fires at step 3
+of `decide_n6`'s own pipeline, strictly before eligibility, N3/N4 availability, or `probability_inputs`
+are ever examined (steps 8+). Proven with 8 adversarial tests, including a control case using the real
+`trend_pullback` contract to show the SAME test harness correctly reaches the LATER
+`MISSING_OR_INVALID_ELIGIBILITY` check when the strategy_id IS in the sealed catalog -- see
+`tests/test_sealed_catalog_blocker.py`, kept as permanent evidence, never relaxed to pass.
+
+This means G0037/G0184/G0059 -- as `ve_brain.StrategyContract` instances built OUTSIDE the installed
+package -- can **never** reach a `TRADE`/`SHADOW_TRADE_CANDIDATE` decision, or even the EV/
+`probability_inputs` gate, through `ve_brain.decide_n6` as it exists today. This is NOT a data-
+availability gap the way the old `MISSING_PROBABILITY_INPUTS` framing implied -- it is a structural
+limitation of the installed `ve_brain` package itself. The only path forward is a new, versioned
+`ve_brain` release that registers these three strategies in its own sealed catalog, followed by a
+Red Team pass on that artifact. `ve_brain` itself was never modified by this package or by anything
+else in this repo, and no local workaround was attempted -- consistent with this codebase's standing
+"read an artifact with exactly the convention its producer wrote it with" discipline.
+
+(The `probability_inputs` data-availability finding from the earlier draft remains TRUE as a secondary,
+independent fact -- `CANONICAL_RERUN_RECORDS.json` still carries no per-strategy target/horizon
+exit-type breakdown for any of the three -- but it is now moot: `UNKNOWN_STRATEGY` blocks these
+strategies before that gate would ever be reached, even if the breakdown existed.)
+
+Status at delivery: built and tested (geometry, feature flags, real-N1/Router-eligibility, the
+adversarial blocker proof), each strategy behind its OWN feature flag, all three DEFAULT OFF. Not wired
 into `entrypoint.py`'s default catalog -- `new_brain_live.n1_incremental.runtime_loop` continues using
-`ve_brain.CANONICAL_STRATEGIES` unless a flag explicitly opts a strategy in."""
+`ve_brain.CANONICAL_STRATEGIES` unless a flag explicitly opts a strategy in, which would still produce
+only `NO_TRADE`/`UNKNOWN_STRATEGY` telemetry today. No deployment, restart, or cutover performed."""
