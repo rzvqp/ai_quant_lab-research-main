@@ -38,6 +38,20 @@ class LiveShadowHeartbeat:
     equity: float | None
     open_orders: int | None
     open_positions: int | None
+    runtime_mode: str = "LEGACY_M15"
+    """RT-N1-INCREMENTAL-WIRING-0001 (2026-08-18): `"LEGACY_M15"` or `"N1_INCREMENTAL_DUAL_CLOCK"` --
+    additive, defaulted so `from_json` on a heartbeat any OLD (pre-this-change) process already wrote
+    deserializes unchanged, and so `NewBrainLiveLoop`'s own existing `_build_heartbeat()` needs only ONE
+    new line (`runtime_mode="LEGACY_M15"`), never a restructure."""
+    n1_version_pin: str | None = None
+    """`ve_n1_replay` version + wheel SHA-256 short form, e.g. `"0.1.1@2cff7e7b"` -- `None` under
+    `LEGACY_M15` (no N1 replay artifact involved), populated under `N1_INCREMENTAL_DUAL_CLOCK`."""
+    snapshot_identity: str | None = None
+    last_m15_bar_id: str | None = None
+    last_m5_bar_id: str | None = None
+    context_timestamp: int | None = None
+    tower_state: str | None = None
+    order_send_calls: int = 0
 
     def to_json(self) -> str:
         return json.dumps(dataclasses.asdict(self))

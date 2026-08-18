@@ -259,6 +259,7 @@ class NewBrainLiveLoop:
             last_outcome_reason=(None if last_entry is None else last_entry.terminal_reason_code),
             mt5_connected=mt5_connected, balance=balance, equity=equity,
             open_orders=open_orders, open_positions=open_positions,
+            runtime_mode="LEGACY_M15",
         )
 
     def _write_heartbeat(self) -> None:
@@ -323,9 +324,23 @@ def build_loop(
 
 
 def main() -> None:
-    """Singleton acquisition happens FIRST, before any MT5/tower I/O -- a second launch must exit
+    """RT-N1-INCREMENTAL-WIRING-0001 (2026-08-18): the ONLY edit in this function for the new runtime
+    mode is the `if` immediately below. `resolve_runtime_mode()` reads `AI_TRADER_RUNTIME_MODE` from the
+    environment and returns `LEGACY_M15` for anything other than the exact literal `N1_INCREMENTAL_DUAL_
+    CLOCK` (unset, empty, a typo) -- so an accidental Scheduled-Task restart with no explicit override
+    reaches the exact same body below, unchanged, that has been running since `65798b4`. The import is
+    local so merely importing this module never pulls in `n1_incremental` unless the flag is actually on.
+
+    Singleton acquisition happens FIRST, before any MT5/tower I/O -- a second launch must exit
     cleanly (`ALREADY_RUNNING`) without ever touching the terminal or spawning a second tower worker
     (RT-N1-PERSIST-0001 section 1: "maximum o instanta decizionala")."""
+    from ai_trader.new_brain_live.n1_incremental.runtime_loop import RUNTIME_MODE_INCREMENTAL, resolve_runtime_mode
+
+    if resolve_runtime_mode() == RUNTIME_MODE_INCREMENTAL:
+        from ai_trader.new_brain_live.n1_incremental.runtime_loop import main_incremental_dual_clock
+        main_incremental_dual_clock()
+        return
+
     lock = SingletonLock()
     try:
         lock.acquire()

@@ -91,6 +91,10 @@ class M5DecisionLoop:
         self._gate = gate
         self._expected_cost_model_fingerprint = expected_cost_model_fingerprint
         self.events_processed = 0
+        self.last_bar: Bar | None = None
+        """RT-N1-INCREMENTAL-WIRING-0001: mirrors `NewBrainLiveLoop`'s own `_last_bar` convention --
+        additive, read by the runtime wiring's own heartbeat builder (`last_m5_bar_id`), never consulted
+        by this class's own decision logic."""
 
     def _record(
         self, *, category: LiveShadowCategory, event_identity: EventIdentity, strategy_id: str,
@@ -351,5 +355,6 @@ class M5DecisionLoop:
         if circuit_state.state is not EngineState.READY:
             return False
         for bar in self._feed.poll():
+            self.last_bar = bar
             self._process_m5_bar(bar)
         return True

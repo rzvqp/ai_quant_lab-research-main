@@ -179,9 +179,15 @@ def main() -> None:
     try:
         request = json.loads(raw)
         response = _handle(request)
+        # `allow_nan=False`: a NaN/Infinity anywhere in the response (a malformed bar's `high`/`low`, a
+        # detector edge case) must fail LOUDLY here as a `ValueError` -- caught below, turned into an
+        # honest `ok=False` error the client fails closed on -- never silently round-trip as the
+        # non-standard `NaN`/`Infinity` JSON literals `json.dumps`'s own default would emit, which the
+        # client's `json.loads` would just as silently accept back into a stop_price computation.
+        payload = json.dumps(response, allow_nan=False)
     except Exception as exc:  # noqa: BLE001 -- must always emit valid JSON, never a bare traceback on stdout
-        response = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    sys.stdout.write(json.dumps(response))
+        payload = json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+    sys.stdout.write(payload)
 
 
 if __name__ == "__main__":
