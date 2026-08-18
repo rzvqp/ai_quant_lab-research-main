@@ -15,7 +15,8 @@ it via `NewBrainTelemetryLog.record_outcome` -- the SAME telemetry log and the S
 
 from __future__ import annotations
 
-from typing import Callable
+import dataclasses
+from typing import Any, Callable
 
 import ve_brain  # type: ignore[import-untyped]
 
@@ -56,6 +57,18 @@ _TIMEFRAME = "M5"
 _CONTEXT_STALE = "CONTEXT_STALE"
 _CONTEXT_FROM_FUTURE = "CONTEXT_FROM_FUTURE"
 _DEFAULT_MAX_CONTEXT_STALENESS_SECONDS = 2 * 900  # two M15 bars of slack, mirrors TowerDependencies' own convention
+_DEFAULT_STOP_ATR_MULTIPLIER = 1.0  # today's existing behavior for every strategy_id with no override
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class StrategyGeometry:
+    """Per-strategy execution geometry `ve_brain.StrategyContract` has no fields for. Canonical source of
+    truth is `n1_incremental.strategies.canonical_specs.GEOMETRY`, which imports this type from here
+    (not the reverse) so `dual_clock` never depends on the newer, higher-level `strategies` package."""
+
+    stop_atr_multiplier: float
+    target_kind: str  # "rr" | "price" | "none" -- the only 3 values ve_brain.contracts._require accepts
+    target_param: float | None
 
 
 def _event_identity(*, trace_id: str, market_event_id: str, bar: Bar, configuration_fingerprint: str) -> EventIdentity:
@@ -77,6 +90,7 @@ class M5DecisionLoop:
         authority_check: Callable[[], DecisionAuthority] | None = None,
         gate: BrokerOrderSubmissionGate = BrokerOrderSubmissionGate(),
         expected_cost_model_fingerprint: str | None = None,
+        strategy_geometry_overrides: dict[str, StrategyGeometry] | None = None,
     ) -> None:
         self._feed = feed
         self._context_store = context_store
@@ -90,6 +104,10 @@ class M5DecisionLoop:
         self._authority_check = authority_check
         self._gate = gate
         self._expected_cost_model_fingerprint = expected_cost_model_fingerprint
+        self._strategy_geometry_overrides = strategy_geometry_overrides or {}
+        """RT-THREE-STRATEGY-0001 (2026-08-18): additive, defaults to {} -- a `strategy_id` absent from
+        this map falls back to today's exact existing geometry (ATR x1 stop, target_kind="rr" /
+        PLACEHOLDER_TARGET_RR), so the 4 pre-existing canonical strategies are byte-for-byte unaffected."""
         self.events_processed = 0
         self.last_bar: Bar | None = None
         """RT-N1-INCREMENTAL-WIRING-0001: mirrors `NewBrainLiveLoop`'s own `_last_bar` convention --
@@ -151,6 +169,26 @@ class M5DecisionLoop:
                 bar=bar, market_event_id=market_event_id, terminal_reason=_CONTEXT_FROM_FUTURE,
             )
             return
+
+        _chain_result_cache: dict[int, Any] = {}
+
+        def _get_chain_result(*, side: int, trace_id: str, configuration_fingerprint: str,
+                               strategy_id: str, strategy_version: str) -> Any:
+            """RT-THREE-STRATEGY-0001: mirrors `bridge._query_tower_chain`'s own established memoization
+            (`evaluate_bar`'s `_get_chain_result`) -- N2/N4's computation depends only on `side`, so every
+            strategy in `self._catalog` sharing this M5 bar's side gets ONE real Tower call, not one each.
+            This is the CEO's own 'un singur apel Tower per market event, partajat intre strategii'
+            requirement, satisfied by reusing the exact pattern the M15 loop already established rather
+            than inventing a new one."""
+            if side not in _chain_result_cache:
+                _chain_result_cache[side] = query_tower_chain(
+                    self._tower, market_event_id=market_event_id, trace_id=trace_id, symbol=bar.symbol,
+                    event_as_of=bar.ts_close, data_cutoff=bar.ts_close,
+                    configuration_fingerprint=configuration_fingerprint, n1_fingerprint=context.n1_output_fp,
+                    regime_axes_status=context.regime_axes_status, strategy_id=strategy_id,
+                    strategy_version=strategy_version, side=side,
+                )
+            return _chain_result_cache[side]
 
         for canon in self._catalog:
             self.events_processed += 1
@@ -216,7 +254,9 @@ class M5DecisionLoop:
             side = side_from_strategy(canon)
             bias_direction = "LONG" if side == 1 else "SHORT"
             entry_price = context.entry_price
-            stop_price = entry_price - context.atr
+            geometry = self._strategy_geometry_overrides.get(canon.strategy_id)
+            stop_atr_multiplier = geometry.stop_atr_multiplier if geometry is not None else _DEFAULT_STOP_ATR_MULTIPLIER
+            stop_price = entry_price - stop_atr_multiplier * context.atr
 
             if legacy_shadow_only:
                 self._record(
@@ -226,12 +266,9 @@ class M5DecisionLoop:
                 )
                 continue
 
-            chain_result = query_tower_chain(
-                self._tower, market_event_id=market_event_id, trace_id=trace_id, symbol=bar.symbol,
-                event_as_of=bar.ts_close, data_cutoff=bar.ts_close,
-                configuration_fingerprint=configuration_fingerprint, n1_fingerprint=context.n1_output_fp,
-                regime_axes_status=context.regime_axes_status, strategy_id=canon.strategy_id,
-                strategy_version=canon.strategy_version, side=side,
+            chain_result = _get_chain_result(
+                side=side, trace_id=trace_id, configuration_fingerprint=configuration_fingerprint,
+                strategy_id=canon.strategy_id, strategy_version=canon.strategy_version,
             )
             traces.append(NodeTrace(
                 trace_id=trace_id, node_name="TowerN2",
@@ -263,6 +300,8 @@ class M5DecisionLoop:
 
             regime_label = eligibility.matched_regimes[0] if eligibility.matched_regimes else None  # type: ignore[attr-defined]
             probability_inputs = load_probability_inputs(canon.strategy_id, canon.strategy_version)
+            target_kind = geometry.target_kind if geometry is not None else "rr"
+            target_param = geometry.target_param if geometry is not None else PLACEHOLDER_TARGET_RR
             candidate = ve_brain.DecisionRequest(
                 contract_id=ve_brain.INPUT_CONTRACT_ID, strategy_id=canon.strategy_id,
                 strategy_version=canon.strategy_version, validation_status=canon.validation_status,
@@ -273,8 +312,8 @@ class M5DecisionLoop:
                 market_map_available=chain_result.market_map_available,
                 levels_available=chain_result.levels_available,
                 confirmation_available=chain_result.confirmation_available,
-                entry_price=entry_price, stop_price=stop_price, target_kind="rr",
-                target_param=PLACEHOLDER_TARGET_RR, holding_window=canon.holding_window, atr=context.atr,
+                entry_price=entry_price, stop_price=stop_price, target_kind=target_kind,
+                target_param=target_param, holding_window=canon.holding_window, atr=context.atr,
                 probability_inputs=probability_inputs, full_spread_price=cost_components.full_spread_price,
                 entry_slippage_price=cost_components.entry_slippage_price,
                 exit_slippage_price=cost_components.exit_slippage_price, symbol=bar.symbol, timeframe=_TIMEFRAME,
@@ -310,11 +349,20 @@ class M5DecisionLoop:
                 source=NEW_BRAIN_SOURCE, trace_id=trace_id, catalog_hash=ve_brain.CANONICAL_CATALOG_HASH,
                 configuration_fingerprint=str(response.configuration_fingerprint),
             )
+            if target_kind == "rr" and target_param is not None:
+                target_price: float | None = entry_price + target_param * (entry_price - stop_price)
+            elif target_kind == "price" and target_param is not None:
+                target_price = target_param
+            else:
+                # target_kind == "none" (e.g. G0037's canonical time-stop exit): no price target exists --
+                # None is the faithful representation, never an invented RR-derived value.
+                target_price = None
+
             outcome_for_risk = NewBrainOutcome(
                 event_identity=event_identity, strategy_id=canon.strategy_id,
                 strategy_version=canon.strategy_version, node_traces=tuple(traces), decision=response,
                 provenance=provenance, entry_price=entry_price, stop_price=stop_price,
-                target_price=entry_price + PLACEHOLDER_TARGET_RR * (entry_price - stop_price),
+                target_price=target_price,
             )
 
             circuit_state = load_persisted_circuit_state(self._state_store)
